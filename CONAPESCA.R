@@ -7,7 +7,7 @@ library(readxl)
 library(tidyverse)
 library(readxl)
 
-path <- 'D:/CONAPESCA/XLS/'
+path <- '~/Downloads/CONAPESCA/XLS/'
 
 setwd(path)
 
@@ -18,11 +18,6 @@ list.files(path = path)
 
 f <- list.files(path = path, pattern = '.xlsx', full.names = T)
 
-read_excel_f(f[2])
-
-sapply(strsplit(my_custom_name_repair(f), "_"), `[`, 7)
-my_custom_name_repair(f)
-
 my_custom_name_repair <- function(x) tolower(gsub(".xlsx", " ", basename(x)))
 
 read_excel_f <- function(x){
@@ -31,10 +26,29 @@ read_excel_f <- function(x){
   return(df)
 }
 
+
+# read_excel_f(f[2])
+# 
+# sapply(strsplit(my_custom_name_repair(f), "_"), `[`, 7)
+# my_custom_name_repair(f)
+
+
 df <- lapply(f, read_excel_f ) %>%
   bind_rows()
 
 df %>% count(Year)
+
+df %>% count(ENTIDAD) %>% view()
+
+# PARSE NAMES
+which_entidad <- c("YUCATAN")
+  
+# recode_entidad <- c("YUCATAN" = "Y", "NUEVO LEON" = "NUEVO LEÓN", "QUERETARO" = "QUERÉTARO")
+recode_entidad <- c("YUCATÁN")
+
+recode_entidad <- structure(recode_entidad, names = which_entidad)
+
+df <- df %>% mutate(name = recode_factor(ENTIDAD, !!!recode_entidad, .ordered = F))
 
 names(df)
 
@@ -96,7 +110,8 @@ df %>%
   arrange(-desc(n)) %>%
   mutate(ENTIDAD = factor(ENTIDAD, levels = unique(ENTIDAD))) %>%
   ggplot(aes(x = n, y = ENTIDAD)) +
-  geom_col() 
+  geom_col() +
+  theme_light(base_family = "GillSans")
 
 # BC alberga el mayor numero de sp acuicolas junto a veracruz, aunque no representa 
 # una fraccion de la produccion total acuicuola prioritaria, 
@@ -106,8 +121,9 @@ df %>%
 # ATUN, OSTION Y LOBINA FIGURAN DENTRO DE LAS SP MAS PRODUCIDAS POR ACUICULTURA,
 # el abulon tmb entra dentro de las primeras 5 sp
 # LA SARDINA, ANCHOVETA, CALAMAR, Y ERIZO FIGURAN DENTRO DE LAS MAS PRODUCIDAS VIA CAPTURA 
+
 df %>%
-  filter(ENTIDAD %in% "BAJA CALIFORNIA") %>%
+  filter(ENTIDAD %in% c("YUCATAN")) %>% # 
   group_by_at(c("ORIGEN","NOMBREPRINCIPALESPECIE")) %>%
   summarise_at(VALOR, sum) %>%
   # Convertir a fraccion del total
@@ -119,7 +135,10 @@ df %>%
   geom_col() +
   facet_grid(ORIGEN ~ ., scales = "free_y", space = "free") +
   # theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  scale_x_continuous(labels = scales::percent)
+  scale_x_continuous(labels = scales::percent) +
+  ggsci::scale_fill_d3() +
+  theme_light(base_family = "GillSans", base_size = 7)
+
   
 
 # CUANTO DINERO REPRESENTA anualmente ESTO?
@@ -127,7 +146,53 @@ df %>%
 df %>%
   filter(ENTIDAD %in% "BAJA CALIFORNIA") %>%
   group_by_at(c("ORIGEN", "ANO")) %>%
-  summarise_at(VALOR, sum) %>% view()
+  summarise_at(VALOR, sum) %>% #view()
   ggplot(aes(y = `VALOR (PESOS)`, x = ANO, fill = ORIGEN)) +
   geom_col() +
   scale_y_continuous(labels = scales::dollar)
+  
+# INDICE D PRECIOS POR ESTADO
+
+library(micEconIndex)  
+
+loop <- df %>% distinct(ENTIDAD) %>% pull()
+
+out <- list()
+
+for (which_entidad in loop) {
+  
+  data <- df %>% 
+    mutate(names_from = ENTIDAD, q = `PESO VIVO (KG)`, p = `VALOR (PESOS)`) %>%
+    filter(names_from %in% which_entidad) %>%
+    # group_by_at(c("NOMBREPRINCIPALESPECIE", "ANO")) %>%
+    group_by_at(c("names_from", "ANO")) %>%
+    summarise_at(c("p", "q"), sum) %>%
+    pivot_wider(names_from = names_from, values_from = c(p, q), values_fill = 0) %>%
+    data.frame(row.names = .$ANO) 
+  
+  prices_nms <- data %>% select_at(vars(any_of(starts_with("p_")))) %>% names()
+  quant_nms <- data %>% select_at(vars(any_of(starts_with("q_")))) %>% names()
+  
+  out[[which_entidad]] <- priceIndex(prices_nms, quant_nms, 1, data, method = "Laspeyres") %>%
+    as_tibble(rownames = "ANO") %>% mutate(ENTIDAD = which_entidad) %>% rename("Laspeyres" = "value")
+  
+  
+}
+
+do.call(rbind, out) -> out
+
+top_entidades <- df %>% 
+  # filter(ANO > 2019) %>%
+  distinct(NOMBREPRINCIPALESPECIE, ENTIDAD) %>% 
+  count(ENTIDAD, sort = T) %>% head(5) %>% pull(ENTIDAD)
+
+
+top_entidades <- c(top_entidades, "YUCATAN")
+
+out %>% 
+  filter(ENTIDAD %in% top_entidades) %>%
+  ggplot(aes(x= ANO, y = Laspeyres,  group = ENTIDAD, color = ENTIDAD)) +
+  geom_path(size = 2) +
+  geom_point(size = 2.5) +
+  ggsci::scale_color_aaas()+
+  theme_light(base_family = "GillSans")
